@@ -2,7 +2,7 @@
 Base scraper class with common functionality for all vehicle website scrapers.
 """
 import time
-import requests
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 from typing import List, Dict, Optional
 from abc import ABC, abstractmethod
@@ -32,7 +32,13 @@ class BaseScraper(ABC):
         """Fetch and parse a webpage."""
         try:
             self._rate_limit_wait()
-            response = requests.get(url, headers=self.headers, timeout=self.timeout)
+            # Use curl_cffi to impersonate Chrome for bypassing bot protection (JA3/TLS fingerprinting)
+            response = requests.get(
+                url, 
+                headers=self.headers, 
+                timeout=self.timeout,
+                impersonate="chrome110"
+            )
             response.raise_for_status()
             return BeautifulSoup(response.content, 'lxml')
         except Exception as e:
@@ -89,8 +95,8 @@ class BaseScraper(ABC):
     def _parse_price(self, price_str: str) -> float:
         """Extract numeric price from string."""
         try:
-            # Remove currency symbols and commas
-            cleaned = price_str.replace('Rs', '').replace('LKR', '').replace(',', '').strip()
+            # Remove currency symbols and other non-numeric characters (except dot)
+            cleaned = price_str.lower().replace('rs.', '').replace('rs', '').replace('lkr', '').replace(',', '').strip()
             return float(cleaned)
         except:
             return 0.0

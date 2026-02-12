@@ -41,7 +41,10 @@ class RiyasewanaScraper(BaseScraper):
                 return vehicles
             
             # Extract vehicle listings
-            listings = soup.find_all('div', class_='item')
+            listings = soup.find_all('li', class_='item')
+            if not listings:
+                # Try alternative selector used in some versions of the site
+                listings = soup.find_all('div', class_='item')
             
             for listing in listings[:self.max_results]:
                 vehicle_data = self._extract_vehicle_data(listing)
@@ -60,7 +63,9 @@ class RiyasewanaScraper(BaseScraper):
         parts = {
             'make': '',
             'model': '',
-            'year': ''
+            'year': '',
+            'year_start': '',
+            'year_end': ''
         }
         
         # Common Sri Lankan vehicle makes
@@ -69,73 +74,123 @@ class RiyasewanaScraper(BaseScraper):
         
         for make in makes:
             if make in query_lower:
-                parts['make'] = make.capitalize()
+                parts['make'] = make
                 break
         
-        # Extract year (4 digits)
-        year_match = re.search(r'\b(19|20)\d{2}\b', query)
-        if year_match:
-            parts['year'] = year_match.group()
+        # Extract year range (e.g., "1995-2003", "2015-2023", "2015 to 2023")
+        # Match full 4-digit years with hyphen or 'to' separator
+        year_range_match = re.search(r'(19\d{2}|20\d{2})\s*[-to]+\s*(19\d{2}|20\d{2})', query, re.IGNORECASE)
+        if year_range_match:
+            parts['year_start'] = year_range_match.group(1)
+            parts['year_end'] = year_range_match.group(2)
+            print(f"Extracted year range: {parts['year_start']}-{parts['year_end']}")
+        else:
+            # Extract single year (4 digits)
+            year_match = re.search(r'\b(19\d{2}|20\d{2})\b', query)
+            if year_match:
+                parts['year'] = year_match.group(1)
+                print(f"Extracted single year: {parts['year']}")
         
         # Model is remaining text
         query_clean = query.lower()
         for make in makes:
             query_clean = query_clean.replace(make, '')
-        query_clean = re.sub(r'\b(19|20)\d{2}\b', '', query_clean)
+        # Remove year and year ranges
+        query_clean = re.sub(r'(19\d{2}|20\d{2})\s*[-to]+\s*(19\d{2}|20\d{2})', '', query_clean, flags=re.IGNORECASE)
+        query_clean = re.sub(r'\b(19\d{2}|20\d{2})\b', '', query_clean)
         parts['model'] = query_clean.strip()
         
+        print(f"Parsed query parts: {parts}")
         return parts
     
     def _build_search_params(self, query_parts: Dict, **kwargs) -> str:
-        """Build URL search parameters."""
-        # Simplified search path - adjust based on actual Riyasewana URL structure
+        """Build URL search parameters matching Riyasewana's structure: /search/{brand}/{model}/{year_range}."""
         params = []
         
+        # Add brand (lowercase)
         if query_parts.get('make'):
             params.append(query_parts['make'].lower())
         
+        # Add model (lowercase with hyphens)
         if query_parts.get('model'):
-            params.append(query_parts['model'].replace(' ', '-').lower())
+            model = self._format_model_name(query_parts['model'])
+            params.append(model)
         
-        # In real implementation, this would match Riyasewana's actual URL structure
+        # Add year or year range
+        if query_parts.get('year_start') and query_parts.get('year_end'):
+            params.append(f"{query_parts['year_start']}-{query_parts['year_end']}")
+        elif query_parts.get('year'):
+            # Single year - use as range (e.g., 2018 becomes 2018-2018)
+            params.append(f"{query_parts['year']}-{query_parts['year']}")
+        
         return '/'.join(params) if params else 'vehicles'
+    
+    def _format_model_name(self, model: str) -> str:
+        """Format model name for URL (lowercase with hyphens)."""
+        # Replace spaces with hyphens
+        formatted = model.strip().replace(' ', '-')
+        # Remove special characters except hyphens and alphanumeric
+        formatted = re.sub(r'[^a-z0-9-]', '', formatted.lower())
+        # Remove multiple consecutive hyphens
+        formatted = re.sub(r'-+', '-', formatted)
+        # Remove leading/trailing hyphens
+        formatted = formatted.strip('-')
+        return formatted
     
     def _extract_vehicle_data(self, listing) -> Dict:
         """Extract vehicle data from a listing element."""
         try:
-            # Note: These selectors are placeholders and need to be adjusted
-            # based on actual Riyasewana.com HTML structure
+            # Title
+            title_elem = listing.find('h2', class_='more')
+            if title_elem and title_elem.find('a'):
+                title = title_elem.find('a').text.strip()
+                url_elem = title_elem.find('a')
+                url = url_elem['href'] if url_elem else ''
+            else:
+                title = ''
+                url = ''
             
-            title_elem = listing.find('h2', class_='title') or listing.find('a', class_='title')
-            title = title_elem.text.strip() if title_elem else ''
-            
-            price_elem = listing.find('div', class_='price') or listing.find('span', class_='price')
-            price = price_elem.text.strip() if price_elem else '0'
-            
-            url_elem = listing.find('a', href=True)
-            url = self.base_url + url_elem['href'] if url_elem else ''
-            
-            image_elem = listing.find('img')
-            image_url = image_elem.get('src', '') if image_elem else ''
-            
-            # Extract additional details
-            details = listing.find('div', class_='details')
+            # Price and other details are in boxintxt divs
+            boxtext = listing.find('div', class_='boxtext')
+            price = '0'
             location = ''
-            year = ''
             mileage = ''
+            year = ''
             
-            if details:
-                detail_items = details.find_all('span')
-                for item in detail_items:
-                    text = item.text.strip()
+            if boxtext:
+                # Price is usually in the bold boxintxt
+                price_elem = boxtext.find('div', class_='boxintxt b')
+                if price_elem:
+                    price = price_elem.text.strip()
+                
+                # Other details are in other boxintxt divs
+                details = boxtext.find_all('div', class_='boxintxt')
+                for detail in details:
+                    if not detail:
+                        continue
+                    text = detail.get_text(strip=True)
                     if 'km' in text.lower():
                         mileage = text
-                    elif any(char.isdigit() for char in text) and len(text) == 4:
-                        year = text
-                    else:
+                    elif not any(char.isdigit() for char in text) and text != price:
                         location = text
+                    # Year might be in title or extracted elsewhere, but let's try to find it
+                    # Riyasewana listings don't always have explicit year field in the boxtext
             
-            return {
+            # Extract year from title if not found
+            if not year and title:
+                import re
+                year_match = re.search(r'\b(19|20)\d{2}\b', title)
+                if year_match:
+                    year = year_match.group()
+            
+            # Image
+            image_elem = listing.find('img')
+            image_url = image_elem.get('src', '') if image_elem else ''
+            # Fix relative image URLs
+            if image_url.startswith('//'):
+                image_url = f"https:{image_url}"
+            
+            data = {
                 'title': title,
                 'price': price,
                 'year': year,
@@ -148,9 +203,10 @@ class RiyasewanaScraper(BaseScraper):
                 'source': 'Riyasewana',
                 'image_url': image_url
             }
+            return data
         
         except Exception as e:
-            print(f"Error extracting vehicle data: {str(e)}")
+            print(f"DEBUG: Error extracting vehicle data: {e}")
             return {}
     
     def _extract_make_from_title(self, title: str) -> str:

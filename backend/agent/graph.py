@@ -3,7 +3,7 @@ LangGraph workflow for vehicle market price agent.
 """
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from typing import Dict, List
 import re
 
@@ -41,14 +41,61 @@ def classify_intent(state: AgentState) -> AgentState:
     return state
 
 
+def extract_vehicle_query(user_query: str, intent: str) -> str:
+    """Extract clean vehicle query from conversational input using LLM."""
+    
+    extraction_prompt = f"""Extract ONLY the vehicle information from this query in a clean format.
+
+User query: "{user_query}"
+
+Rules:
+1. Extract brand, model, and year/year range ONLY
+2. Format: "Brand Model YYYY" or "Brand Model YYYY-YYYY" (ALWAYS use full 4-digit years)
+3. Remove all conversational words like "compare", "price", "buy", "need", "in sri lanka", etc.
+4. Keep model variants (e.g., "Corolla 110", "Alto K10")
+5. If comparing multiple vehicles, separate with " | " (pipe)
+6. CRITICAL: Always use full 4-digit years (e.g., "1995-2003", NOT "19-20" or "95-03")
+
+Examples:
+- "Compare toyota corolla 110 with alto k10" → "Toyota Corolla 110 | Suzuki Alto K10"
+- "I need to buy a corolla 2015-2023" → "Toyota Corolla 2015-2023"
+- "What is the price of Honda Fit 2018?" → "Honda Fit 2018"
+- "Toyota Corolla 1995-2003" → "Toyota Corolla 1995-2003"
+- "Nissan Leaf from 2020 to 2022" → "Nissan Leaf 2020-2022"
+
+Extracted vehicle query:"""
+    
+    try:
+        messages = [HumanMessage(content=extraction_prompt)]
+        response = llm.invoke(messages)
+        extracted = response.content.strip()
+        # Remove quotes if present
+        extracted = extracted.strip('"\'')
+        return extracted if extracted else user_query
+    except Exception as e:
+        print(f"Error extracting vehicle query: {e}")
+        return user_query
+
+
+
 def scrape_vehicles(state: AgentState) -> AgentState:
     """Scrape vehicle data from websites."""
-    query = state['user_query']
+    user_query = state['user_query']
     intent = state['intent']
+    
+    # Extract clean vehicle query from conversational input
+    clean_query = extract_vehicle_query(user_query, intent)
+    print(f"Original query: {user_query}")
+    print(f"Extracted query: {clean_query}")
     
     if intent == 'comparison':
         # Extract vehicle models for comparison
-        models = extract_vehicle_models(query)
+        if ' | ' in clean_query:
+            # Already separated by extraction
+            models = [m.strip() for m in clean_query.split('|')]
+        else:
+            models = extract_vehicle_models(clean_query)
+        
         if len(models) >= 2:
             comparison = vehicle_scraper.compare_vehicles(models)
             state['comparison_data'] = comparison
@@ -57,12 +104,12 @@ def scrape_vehicles(state: AgentState) -> AgentState:
                 state['scraped_data'].extend(model_vehicles[:3])  # Top 3 from each
         else:
             # Fallback to single search
-            vehicles = vehicle_scraper.search_all(query)
+            vehicles = vehicle_scraper.search_all(clean_query)
             state['scraped_data'] = vehicles[:10]
     
     else:
         # Single vehicle search
-        vehicles = vehicle_scraper.search_all(query)
+        vehicles = vehicle_scraper.search_all(clean_query)
         state['scraped_data'] = vehicles[:10]
     
     return state
@@ -147,7 +194,7 @@ Please provide a helpful response to the user's query based on the above informa
 def extract_vehicle_models(query: str) -> List[str]:
     """Extract vehicle models from comparison query."""
     # Simple extraction - split by common separators
-    separators = [' vs ', ' versus ', ' and ', ',']
+    separators = [' vs ', ' versus ', ' and ', ' with ', ',']
     
     models = [query]
     for sep in separators:
@@ -159,7 +206,7 @@ def extract_vehicle_models(query: str) -> List[str]:
     models = [m.strip() for m in models]
     
     # Remove common words
-    remove_words = ['compare', 'price', 'of', 'the', 'between']
+    remove_words = ['compare', 'price', 'of', 'the', 'between', 'in', 'sri', 'lanka', 'buy', 'need', 'want']
     cleaned_models = []
     for model in models:
         for word in remove_words:

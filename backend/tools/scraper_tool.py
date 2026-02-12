@@ -16,7 +16,7 @@ class VehicleScraperTool:
         self.scrapers = {
             'riyasewana': RiyasewanaScraper(),
             'ikman': IkmanScraper(),
-            'patpat': PatpatScraper()
+            # 'patpat': PatpatScraper()  # Disabled for now
         }
     
     def search_all(self, query: str, sources: Optional[List[str]] = None) -> List[Dict]:
